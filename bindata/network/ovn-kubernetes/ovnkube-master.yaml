@@ -553,7 +553,10 @@ spec:
           export OVN_NB_DAEMON=$(ovn-nbctl --pidfile=/var/run/ovn/ovn-nbctl.pid \
             --detach \
             -p /ovn-cert/tls.key -c /ovn-cert/tls.crt -C /ovn-ca/ca-bundle.crt \
-            --db "{{.OVN_NB_DB_LIST}}")
+             --db "{{.OVN_NB_DB_LIST}} --log-file=/run/ovn/ovn-nbctl.log")
+         
+          # include nbctl daemon logging, allow for ovn-nbctl to create the log file
+          tail -f --retry /run/ovn/ovn-nbctl.log &
 
            # REMOVEME once OVN path for control socket is fixed (right now uses /var/run/openvswitch)
           ln -sf $OVN_NB_DAEMON /var/run/ovn/ || true
@@ -571,13 +574,11 @@ spec:
             --sb-client-privkey /ovn-cert/tls.key \
             --sb-client-cert /ovn-cert/tls.crt \
             --sb-client-cacert /ovn-ca/ca-bundle.crt \
-            --sb-cert-common-name "{{.OVN_CERT_CN}}" \
             --nb-address "{{.OVN_NB_DB_LIST}}" \
             --nb-client-privkey /ovn-cert/tls.key \
             --nb-client-cert /ovn-cert/tls.crt \
             --nb-client-cacert /ovn-ca/ca-bundle.crt \
             --nbctl-daemon-mode \
-            --nb-cert-common-name "{{.OVN_CERT_CN}}" \
             --enable-multicast
         lifecycle:
           preStop:
