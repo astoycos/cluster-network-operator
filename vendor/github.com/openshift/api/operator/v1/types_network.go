@@ -325,6 +325,12 @@ type OVNKubernetesConfig struct {
 	// cluster.
 	// +optional
 	IPsecConfig *IPsecConfig `json:"ipsecConfig,omitempty"`
+	// aclLogging enables ACL audit logging for namespaces 
+	// +optional 
+	AclLogging *bool `json:"aclLogging,omitempty"`
+	// aclLoggingRateLimit allows for the configuring of max acl logging rate 
+	// +optional
+	AclLoggingRateLimit  *uint32 `json:"aclLoggingRateLimit,omitempty"`
 }
 
 type HybridOverlayConfig struct {
