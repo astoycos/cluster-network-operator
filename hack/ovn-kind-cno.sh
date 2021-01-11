@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Version v1.17.0 or higher is required
-K8S_VERSION=${K8S_VERSION:-v1.18.2}
+K8S_VERSION=${K8S_VERSION:-v1.19.4}
 BUILD_OVN=${BUILD_OVN:-false}
 BUILD_CNO=${BUILD_CNO:-false}
 BUILD_MULTUS=${BUILD_MULTUS:-false}
@@ -160,6 +160,9 @@ if [ "$BUILD_CNO" != true ]; then
   kubectl -n openshift-network-operator  exec $CNO_POD sed -i '/host-run-netns/{n;s/readOnly.*/mountPropagation: Bidirectional/}' /bindata/network/ovn-kubernetes/ovnkube-node.yaml > /tmp/ovnkube-node.yaml
   kubectl cp /tmp/ovnkube-node.yaml openshift-network-operator/${CNO_POD}:/bindata/network/ovn-kubernetes/
 fi
+
+#Start OVS on Node 
+kubectl apply -f $CNO_PATH/bindata/ovn-kubernetes/ovn-kubernetes-ovs.yaml
 
 echo "Creating \"cluster-config-v1\" configMap with $NUM_MASTER_NODES master nodes"
 cat <<EOF | kubectl create -f - 
