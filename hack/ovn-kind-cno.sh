@@ -24,6 +24,23 @@ else
   HOST_PREFIX=24
 fi
 
+# Some environments (Fedora32,31 on desktop), have problems when the cluster
+# is deleted directly with kind `kind delete cluster --name ovn`, it restarts the host.
+# The root cause is unknown, this also can not be reproduced in Ubuntu 20.04 or
+# with Fedora32 Cloud, but it does not happen if we clean first the ovn-kubernetes resources.
+delete()
+{
+  timeout 5 kubectl --kubeconfig ${HOME}/admin.conf delete namespace ovn-kubernetes || true
+  sleep 5
+  kind delete cluster --name ${KIND_CLUSTER_NAME:-ovn}
+}
+
+# Create KIND cluster. For additional debug, add '--verbosity <int>': 0 None .. 3 Debug
+export KUBECONFIG=${HOME}/admin.conf
+if kind get clusters | grep ovn; then
+  delete
+fi
+
 # Check for docker
 if ! command -v docker; then
   echo "docker binary missing in PATH. Docker is required for this deployment"
