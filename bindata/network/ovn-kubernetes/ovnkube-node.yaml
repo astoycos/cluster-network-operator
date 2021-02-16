@@ -50,6 +50,7 @@ spec:
           echo "$(date -Iseconds) - starting ovn-controller"
           exec ovn-controller unix:/var/run/openvswitch/db.sock -vfile:off \
             --no-chdir --pidfile=/var/run/ovn/ovn-controller.pid \
+            --syslog-method=unix:/dev/acl-log \
             -p /ovn-cert/tls.key -c /ovn-cert/tls.crt -C /ovn-ca/ca-bundle.crt \
             -vconsole:"${OVN_LOG_LEVEL}"
         securityContext:
@@ -78,11 +79,57 @@ spec:
           name: ovn-cert
         - mountPath: /ovn-ca
           name: ovn-ca
+        - mountPath: /dev/acl-log
+          name: acl-log
         terminationMessagePolicy: FallbackToLogsOnError
         resources:
           requests:
             cpu: 10m
             memory: 300Mi
+            
+      - name: ovn-acl-logging
+        image: "{{.OvnImage}}"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -xe
+          if [[ -f "/env/${K8S_NODE}" ]]; then
+            set -o allexport
+            source "/env/${K8S_NODE}"
+            set +o allexport
+          fi
+          
+          export SYSTEMD_IGNORE_CHROOT=yes
+
+          dnf install rsyslog 
+
+          systemctl start rsyslog 
+
+        env:
+        # for kubectl
+        - name: KUBERNETES_SERVICE_PORT
+          value: "{{.KUBERNETES_SERVICE_PORT}}"
+        - name: KUBERNETES_SERVICE_HOST
+          value: "{{.KUBERNETES_SERVICE_HOST}}"
+        - name: OVN_CONTROLLER_INACTIVITY_PROBE
+          value: "{{.OVN_CONTROLLER_INACTIVITY_PROBE}}"
+        - name: OVN_KUBE_LOG_LEVEL
+          value: "4"
+        - name: K8S_NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        ports:
+        - name: metrics-port
+          containerPort: 29103
+        securityContext:
+          privileged: true
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        # Unix socket for slurping OVN-Controller ACL logs 
+        - mountPath: /dev/log
+          name: acl-log
 
       - name: kube-rbac-proxy
         image: {{.KubeRBACProxyImage}}
@@ -303,6 +350,9 @@ spec:
       - name: run-ovn
         hostPath:
           path: /var/run/ovn
+      - name: acl-log
+        hostPath: 
+          path: /dev/acl-log
       # For CNI server
       - name: host-run-ovn-kubernetes
         hostPath:
