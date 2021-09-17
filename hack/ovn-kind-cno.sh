@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -xeuo pipefail
 
 # Version v1.19.0 or higher is required
 K8S_VERSION=${K8S_VERSION:-v1.20.0}
-BUILD_OVN=${BUILD_OVN:-false}
-BUILD_CNO=${BUILD_CNO:-false}
+BUILD_OVN=${BUILD_OVN:-true}
+BUILD_CNO=${BUILD_CNO:-true}
 BUILD_MULTUS=${BUILD_MULTUS:-false}
-CNO_PATH=${CNO_PATH:-$GOPATH/src/github.com/openshift/cluster-network-operator}
-OVN_K8S_PATH=${OVN_K8S_PATH:-$GOPATH/src/github.com/ovn-org/ovn-kubernetes}
+CNO_PATH=${CNO_PATH:-/home/astoycos/openshift/cluster-network-operator}
+OVN_K8S_PATH=${OVN_K8S_PATH:-/home/astoycos/openshift/ovn-kubernetes-1}
 KIND_CONFIG=${KIND_CONFIG:-$HOME/kind-ovn-config.yaml}
 export KUBECONFIG=${HOME}/kube-ovn.conf
 NUM_MASTER_NODES=1
@@ -41,14 +41,38 @@ if ! sudo iptables -C DOCKER-USER -j ACCEPT > /dev/null 2>&1; then
   sudo iptables -I DOCKER-USER -j ACCEPT
 fi
 
- # create the config file
+
+# Detect API_IP used for external communication
+#
+# You can't use an IPv6 address for the external API, docker does not support
+# IPv6 port mapping. Always use the IPv4 host address for the API Server field.
+# This will keep compatibility and people will be able to connect with kubectl
+# from outside
+#
+# ip -4 addr -> Run ip command for IPv4
+# grep -oP '(?<=inet\s)\d+(\.\d+){3}' -> Use only the lines with the
+#   IPv4 Addresses and strip off the trailing subnet mask, /xx
+# grep -v "127.0.0.1" -> Remove local host
+# head -n 1 -> Of the remaining, use first entry
+API_IP=$(ip -4 addr | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0.1" | head -n 1)
+if [ -z "$API_IP" ]; then
+  echo "Error detecting machine IPv4 to use as API server. Default to 0.0.0.0."
+  API_IP=0.0.0.0
+fi
+
+# create the config file
   cat <<EOF > ${KIND_CONFIG}
 # config for 1 control plane node and 2 workers (necessary for conformance)
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
-  ipFamily: ${IP_FAMILY:-ipv4}
+  # kube proxy will be disabled
+  kubeProxyMode: "none"
+  # the default CNI will not be installed
   disableDefaultCNI: true
+  ipFamily: ${IP_FAMILY:-ipv4}
+  apiServerAddress: ${API_IP:-0.0.0.0}
+  apiServerPort: 11337
   podSubnet: ${CLUSTER_CIDR:-10.244.0.0/16}
   serviceSubnet: ${SERVICE_NETWORK:-10.96.0.0/12}
 featureGates:
@@ -148,7 +172,7 @@ kubectl create -f https://github.com/openshift/cluster-ingress-operator/raw/mast
 
 if [ "$BUILD_OVN" = true ] || [ "$BUILD_CNO" = true ]; then
   pushd $CNO_TEMPLATES
-  DEPLOYMENT_TEMPLATE=$(ls 0000*deployment*)
+  DEPLOYMENT_TEMPLATE=$(ls 0000*deployment.*)
   if [ -z "$DEPLOYMENT_TEMPLATE" ]; then
     echo "error locating deployment template in $CNO_TEMPLATES"
     exit 1
@@ -194,6 +218,23 @@ spec:
   - ${SERVICE_NETWORK}
 EOF
 
+# We need to make a fake cluster infrastructure resource here(say platform spec is AWS)
+echo "Creating Cluster Infrastructure config Cluster resource"
+cat << EOF | kubectl create -f -
+apiVersion: config.openshift.io/v1
+kind: Infrastructure
+metadata:
+  generation: 1
+  name: cluster
+spec:
+  cloudConfig:
+    name: ""
+  platformSpec:
+    aws: {}
+    type: AWS
+EOF
+
+
 
 # OVS is expected to run in systemd but that not an option in kindest/node
 # we need to deploy it in a pod.
@@ -201,7 +242,7 @@ kubectl create namespace ovs-kind
 kubectl create -f $CNO_PATH/hack/ovs-kind.yaml
 
 echo "Creating CNO operator"
-for f in $(ls $CNO_TEMPLATES| grep 0000 | grep -v credentials); do
+for f in $(ls $CNO_TEMPLATES| grep 0000 | grep -v credentials | grep -v ibm); do
   kubectl create -f ${CNO_TEMPLATES}/$f
 done
 
@@ -255,11 +296,11 @@ if ! kubectl wait -n openshift-multus --for=condition=ready pods --all --timeout
 fi
 
 # CNI binary is placed late and kubelet gets in bad state for some reason 
-for n in $NODES; do
-  echo "Restarting containerd and kubelet on node: $n"
-  docker exec $n bash -c "systemctl restart containerd"
-  docker exec $n bash -c "systemctl restart kubelet" 
-done
+#for n in $NODES; do
+#  echo "Restarting containerd and kubelet on node: $n"
+#  docker exec $n bash -c "systemctl restart containerd"
+#  docker exec $n bash -c "systemctl restart kubelet" 
+#done
 
 if ! kubectl wait --for=condition=ready nodes --all --timeout=300s ; then 
    echo "nodes are not ready" 
