@@ -51,6 +51,15 @@ spec:
             source "/env/${K8S_NODE}"
             set +o allexport
           fi  
+
+          while true; do
+            gateway_int=$(ip link list | grep breth0)
+            if [[ -n "${gateway_int}" ]]; then
+              break
+            fi
+            echo "I$(date "+%m%d %H:%M:%S.%N") - waiting for ovnkube-node to make the gateway interface "
+            sleep 1
+          done
           
           echo "$(date -Iseconds) - starting ovn-controller"
           exec ovn-controller unix:/var/run/openvswitch/db.sock -vfile:off \
@@ -235,7 +244,7 @@ spec:
           echo "I$(date "+%m%d %H:%M:%S.%N") - starting ovnkube-node db_ip ${db_ip}"
 
           if [ "{{.OVN_GATEWAY_MODE}}" == "shared" ]; then
-            gateway_mode_flags="--gateway-mode shared --gateway-interface br-ex"
+            gateway_mode_flags="--gateway-mode shared"
           elif [ "{{.OVN_GATEWAY_MODE}}" == "local" ]; then
             gateway_mode_flags="--gateway-mode local --gateway-interface br-ex"
           else
@@ -271,7 +280,7 @@ spec:
             --sb-client-cacert /ovn-ca/ca-bundle.crt \
             --sb-cert-common-name "{{.OVN_CERT_CN}}" \
             --config-file=/run/ovnkube-config/ovnkube.conf \
-            --loglevel "${OVN_KUBE_LOG_LEVEL}" \
+            --loglevel "5" \
             --inactivity-probe="${OVN_CONTROLLER_INACTIVITY_PROBE}" \
             ${gateway_mode_flags} \
             --metrics-bind-address "127.0.0.1:29103" \
