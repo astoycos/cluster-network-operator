@@ -6,8 +6,8 @@ K8S_VERSION=${K8S_VERSION:-v1.20.0}
 BUILD_OVN=${BUILD_OVN:-true}
 BUILD_CNO=${BUILD_CNO:-true}
 BUILD_MULTUS=${BUILD_MULTUS:-false}
-CNO_PATH=${CNO_PATH:-/home/astoycos/openshift/cluster-network-operator}
-OVN_K8S_PATH=${OVN_K8S_PATH:-/home/astoycos/openshift/ovn-kubernetes-1}
+CNO_PATH=${CNO_PATH:-~/go/src/github.com/openshift/cluster-network-operator}
+OVN_K8S_PATH=${OVN_K8S_PATH:-~/go/src/github.com/openshift/ovn-kubernetes}
 KIND_CONFIG=${KIND_CONFIG:-$HOME/kind-ovn-config.yaml}
 export KUBECONFIG=${HOME}/kube-ovn.conf
 NUM_MASTER_NODES=1
@@ -118,7 +118,7 @@ if [ "$BUILD_OVN" = true ]; then
   echo "Building OVN-K8S"
   pushd $OVN_K8S_PATH
   pushd go-controller
-  make clean
+  sudo make clean
   make
   popd
   pushd dist/images
@@ -240,6 +240,37 @@ EOF
 # we need to deploy it in a pod.
 kubectl create namespace ovs-kind
 kubectl create -f $CNO_PATH/hack/ovs-kind.yaml
+
+if ! kubectl wait -n ovs-kind --for=condition=ready pods --all --timeout=120s ; then
+  echo "OVS pods are not running"
+  #exit 1
+fi
+
+
+OVS_PODS=($(kubectl get pods -n ovs-kind --output=jsonpath={.items..metadata.name}) )
+OVS_POD_NODES=($(kubectl get pods -n ovs-kind --output=jsonpath={.items[*].spec.nodeName}))
+
+
+#Setup br-ex 
+
+for i in "${!OVS_PODS[@]}"; do
+
+ echo "Setting up OVS br-ex in OVS daemon ${OVS_PODS[$i]} on node ${OVS_POD_NODES[$i]}"
+ DEFAULT_INTERFACE=$(docker exec "${OVS_POD_NODES[$i]}" ip route show default | awk '{ if ($4 == "dev") { print $5; exit } }')
+ DEFAULT_GW_IP=$(docker exec  "${OVS_POD_NODES[$i]}" ip route show default | awk '{ if ($4 == "dev") { print $3; exit } }')
+ NIC_IP=$(docker exec "${OVS_POD_NODES[$i]}" hostname -I | awk '{print $1}')
+ if [ -z "$DEFAULT_INTERFACE" ] || [ -z "$DEFAULT_GW_IP" ]
+ then 
+    echo "No Default_Interface cannot setup br-ex"
+    exit 1 
+ fi 
+ 
+ kubectl exec "${OVS_PODS[$i]}" -n ovs-kind -- ovs-vsctl -- add-br br-ex -- add-port br-ex $DEFAULT_INTERFACE
+ docker exec "${OVS_POD_NODES[$i]}" ip addr flush dev $DEFAULT_INTERFACE 
+ docker exec "${OVS_POD_NODES[$i]}" ip addr add $NIC_IP/16 dev br-ex 
+ docker exec "${OVS_POD_NODES[$i]}" ip link set br-ex up
+ docker exec "${OVS_POD_NODES[$i]}" ip route add default via $DEFAULT_GW_IP dev br-ex
+done
 
 echo "Creating CNO operator"
 for f in $(ls $CNO_TEMPLATES| grep 0000 | grep -v credentials | grep -v ibm); do
