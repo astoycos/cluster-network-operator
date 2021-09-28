@@ -252,11 +252,11 @@ OVS_POD_NODES=($(kubectl get pods -n ovs-kind --output=jsonpath={.items[*].spec.
 
 
 #Setup br-ex 
-
 for i in "${!OVS_PODS[@]}"; do
 
  echo "Setting up OVS br-ex in OVS daemon ${OVS_PODS[$i]} on node ${OVS_POD_NODES[$i]}"
  DEFAULT_INTERFACE=$(docker exec "${OVS_POD_NODES[$i]}" ip route show default | awk '{ if ($4 == "dev") { print $5; exit } }')
+ DEFAULT_INTERFACE_MAC=$(docker exec "${OVS_POD_NODES[$i]}" cat /sys/class/net/eth0/address)
  DEFAULT_GW_IP=$(docker exec  "${OVS_POD_NODES[$i]}" ip route show default | awk '{ if ($4 == "dev") { print $3; exit } }')
  NIC_IP=$(docker exec "${OVS_POD_NODES[$i]}" hostname -I | awk '{print $1}')
  if [ -z "$DEFAULT_INTERFACE" ] || [ -z "$DEFAULT_GW_IP" ]
@@ -265,7 +265,8 @@ for i in "${!OVS_PODS[@]}"; do
     exit 1 
  fi 
  
- kubectl exec "${OVS_PODS[$i]}" -n ovs-kind -- ovs-vsctl -- add-br br-ex -- add-port br-ex $DEFAULT_INTERFACE
+ kubectl exec "${OVS_PODS[$i]}" -n ovs-kind -- ovs-vsctl -- add-br br-ex -- br-set-external-id br-ex bridge-id br-ex -- br-set-external-id br-ex bridge-uplink eth0 -- set bridge br-ex fail-mode=standalone other_config:hwaddr=$DEFAULT_INTERFACE_MAC -- add-port br-ex $DEFAULT_INTERFACE -- set port eth0 other-config:transient=true
+
  docker exec "${OVS_POD_NODES[$i]}" ip addr flush dev $DEFAULT_INTERFACE 
  docker exec "${OVS_POD_NODES[$i]}" ip addr add $NIC_IP/16 dev br-ex 
  docker exec "${OVS_POD_NODES[$i]}" ip link set br-ex up
@@ -310,15 +311,15 @@ sleep 200
 
 if ! kubectl wait -n openshift-ovn-kubernetes --for=condition=ready pods --all --timeout=30s ; then
   echo "OVN-k8s pods are not running"
-  #exit 1
+  exit 1
 fi
 
 # Configuring secret for multus-admission-webhook
-# https://raw.githubusercontent.com/openshift/multus-admission-controller/release-4.7/hack/webhook-create-signed-cert.sh
+# https://raw.githubusercontent.com/openshift/multus-admission-controller/release-4.9/hack/webhook-create-signed-cert.sh
 $CNO_PATH/hack/webhook-create-signed-cert.sh --service multus-admission-controller --namespace openshift-multus --secret multus-admission-controller-secret
 
 # Configuring secret for network metrics service
-# https://raw.githubusercontent.com/openshift/multus-admission-controller/release-4.7/hack/webhook-create-signed-cert.sh
+# https://raw.githubusercontent.com/openshift/multus-admission-controller/release-4.9/hack/webhook-create-signed-cert.sh
 $CNO_PATH/hack/webhook-create-signed-cert.sh --service network-metrics-service --namespace openshift-multus --secret metrics-daemon-secret
 
 if ! kubectl wait -n openshift-multus --for=condition=ready pods --all --timeout=100s ; then
@@ -327,11 +328,11 @@ if ! kubectl wait -n openshift-multus --for=condition=ready pods --all --timeout
 fi
 
 # CNI binary is placed late and kubelet gets in bad state for some reason 
-#for n in $NODES; do
-#  echo "Restarting containerd and kubelet on node: $n"
-#  docker exec $n bash -c "systemctl restart containerd"
-#  docker exec $n bash -c "systemctl restart kubelet" 
-#done
+for n in $NODES; do
+  echo "Restarting containerd and kubelet on node: $n"
+  docker exec $n bash -c "systemctl restart containerd"
+  docker exec $n bash -c "systemctl restart kubelet" 
+done
 
 if ! kubectl wait --for=condition=ready nodes --all --timeout=300s ; then 
    echo "nodes are not ready" 

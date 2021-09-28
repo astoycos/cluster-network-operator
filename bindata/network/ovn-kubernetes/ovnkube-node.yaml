@@ -51,15 +51,6 @@ spec:
             source "/env/${K8S_NODE}"
             set +o allexport
           fi  
-
-          while true; do
-            gateway_int=$(ip link list | grep breth0)
-            if [[ -n "${gateway_int}" ]]; then
-              break
-            fi
-            echo "I$(date "+%m%d %H:%M:%S.%N") - waiting for ovnkube-node to make the gateway interface "
-            sleep 1
-          done
           
           echo "$(date -Iseconds) - starting ovn-controller"
           exec ovn-controller unix:/var/run/openvswitch/db.sock -vfile:off \
