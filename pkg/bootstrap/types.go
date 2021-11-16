@@ -2,8 +2,8 @@ package bootstrap
 
 import (
 	"github.com/gophercloud/utils/openstack/clientconfig"
-
 	configv1 "github.com/openshift/api/config/v1"
+	"github.com/openshift/cluster-network-operator/pkg/controller/flowsconfig"
 	appsv1 "k8s.io/api/apps/v1"
 )
 
@@ -44,6 +44,7 @@ type OVNBootstrapResult struct {
 	Platform                configv1.PlatformType
 	OVNKubernetesConfig     *OVNConfigBoostrapResult
 	PrePullerDaemonset      *appsv1.DaemonSet
+	FlowsConfig             *flowsconfig.FlowsConfig
 }
 
 type BootstrapResult struct {

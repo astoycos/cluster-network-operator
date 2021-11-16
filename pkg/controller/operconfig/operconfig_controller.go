@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/openshift/cluster-network-operator/pkg/controller/flowsconfig"
+
 	"github.com/pkg/errors"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -68,6 +70,12 @@ func add(mgr manager.Manager, r *ReconcileOperConfig) error {
 
 	// Watch for changes to primary resource Network
 	err = c.Watch(&source.Kind{Type: &operv1.Network{}}, &handler.EnqueueRequestForObject{})
+	if err != nil {
+		return err
+	}
+
+	// watch for changes in the ovs-flows-config map
+	err = flowsconfig.WatchForConfigMap(c)
 	if err != nil {
 		return err
 	}

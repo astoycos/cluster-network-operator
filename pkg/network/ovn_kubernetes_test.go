@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	uns "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -19,6 +21,7 @@ import (
 	operv1 "github.com/openshift/api/operator/v1"
 	"github.com/openshift/cluster-network-operator/pkg/apply"
 	"github.com/openshift/cluster-network-operator/pkg/bootstrap"
+	"github.com/openshift/cluster-network-operator/pkg/controller/flowsconfig"
 	"github.com/openshift/cluster-network-operator/pkg/names"
 	"github.com/openshift/cluster-network-operator/pkg/util/k8s"
 )
@@ -84,6 +87,9 @@ func TestRenderOVNKubernetes(t *testing.T) {
 	g.Expect(objs).To(ContainElement(HaveKubernetesID("DaemonSet", "openshift-ovn-kubernetes", "ovnkube-master")))
 	g.Expect(objs).To(ContainElement(HaveKubernetesID("DaemonSet", "openshift-ovn-kubernetes", "ovnkube-node")))
 	g.Expect(objs).To(ContainElement(HaveKubernetesID("ConfigMap", "openshift-ovn-kubernetes", "ovnkube-config")))
+	g.Expect(objs).To(ContainElement(HaveKubernetesID("Role", "openshift-network-operator", "ovs-flows-config-publisher")))
+	g.Expect(objs).To(ContainElement(HaveKubernetesID("Role", "openshift-network-operator", "ovs-flows-config-subscriber")))
+	g.Expect(objs).To(ContainElement(HaveKubernetesID("RoleBinding", "openshift-network-operator", "ovs-flows-config-subscriber")))
 
 	// make sure all deployments are in the master
 	for _, obj := range objs {
@@ -1566,6 +1572,114 @@ func TestRenderOVNKubernetesDualStackPrecedenceOverUpgrade(t *testing.T) {
 	}
 }
 
+func TestRenderOVNKubernetesOVSFlowsConfigMap(t *testing.T) {
+	config := &operv1.NetworkSpec{
+		ServiceNetwork: []string{"172.30.0.0/16"},
+		ClusterNetwork: []operv1.ClusterNetworkEntry{
+			{CIDR: "10.128.0.0/15", HostPrefix: 23},
+		},
+		DefaultNetwork: operv1.DefaultNetworkDefinition{
+			Type: operv1.NetworkTypeOVNKubernetes,
+			OVNKubernetesConfig: &operv1.OVNKubernetesConfig{
+				GenevePort:        ptrToUint32(8061),
+				PolicyAuditConfig: &operv1.PolicyAuditConfig{},
+			},
+		},
+		DisableMultiNetwork: boolPtr(true),
+	}
+	testCases := []struct {
+		Description string
+		FlowsConfig *flowsconfig.FlowsConfig
+		Expected    []v1.EnvVar
+		NotExpected []string
+	}{
+		{
+			Description: "No detected OVN flows config",
+			NotExpected: []string{"IPFIX_COLLECTORS", "IPFIX_CACHE_MAX_FLOWS",
+				"IPFIX_CACHE_ACTIVE_TIMEOUT", "IPFIX_SAMPLING"},
+		},
+		{
+			Description: "Only target is specified",
+			FlowsConfig: &flowsconfig.FlowsConfig{
+				Target: "1.2.3.4:567",
+			},
+			Expected: []v1.EnvVar{{Name: "IPFIX_COLLECTORS", Value: "1.2.3.4:567"}},
+			NotExpected: []string{"IPFIX_CACHE_MAX_FLOWS",
+				"IPFIX_CACHE_ACTIVE_TIMEOUT", "IPFIX_SAMPLING"},
+		},
+		{
+			Description: "IPFIX performance variables are specified",
+			FlowsConfig: &flowsconfig.FlowsConfig{
+				Target:             "7.8.9.10:1112",
+				CacheMaxFlows:      uintPtr(123),
+				CacheActiveTimeout: uintPtr(456),
+				Sampling:           uintPtr(789),
+			},
+			Expected: []v1.EnvVar{
+				{Name: "IPFIX_COLLECTORS", Value: "7.8.9.10:1112"},
+				{Name: "IPFIX_CACHE_MAX_FLOWS", Value: "123"},
+				{Name: "IPFIX_CACHE_ACTIVE_TIMEOUT", Value: "456"},
+				{Name: "IPFIX_SAMPLING", Value: "789"},
+			},
+		},
+		{
+			Description: "Wrong configuration: target missing but performance variables present",
+			FlowsConfig: &flowsconfig.FlowsConfig{
+				CacheMaxFlows:      uintPtr(123),
+				CacheActiveTimeout: uintPtr(456),
+				Sampling:           uintPtr(789),
+			},
+			NotExpected: []string{"IPFIX_COLLECTORS", "IPFIX_CACHE_MAX_FLOWS",
+				"IPFIX_CACHE_ACTIVE_TIMEOUT", "IPFIX_SAMPLING"},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.Description, func(t *testing.T) {
+			RegisterTestingT(t)
+			g := NewGomegaWithT(t)
+			bootstrapResult := &bootstrap.BootstrapResult{
+				OVN: bootstrap.OVNBootstrapResult{
+					MasterIPs: []string{"1.2.3.4"},
+					OVNKubernetesConfig: &bootstrap.OVNConfigBoostrapResult{
+						GatewayMode:            "shared",
+						EnableEgressIP:         true,
+						DisableSNATMultipleGWs: false,
+					},
+					FlowsConfig: tc.FlowsConfig,
+				},
+			}
+			objs, err := renderOVNKubernetes(config, bootstrapResult, manifestDirOvn)
+			g.Expect(err).ToNot(HaveOccurred())
+			nodeDS := findInObjs("apps", "DaemonSet", "ovnkube-node", "openshift-ovn-kubernetes", objs)
+			ds := appsv1.DaemonSet{}
+			g.Expect(convert(nodeDS, &ds)).To(Succeed())
+			nodeCont, ok := findContainer(ds.Spec.Template.Spec.Containers, "ovnkube-node")
+			g.Expect(ok).To(BeTrue(), "expecting container named ovnkube-node in the DaemonSet")
+			g.Expect(nodeCont.Env).To(ContainElements(tc.Expected))
+			for _, ev := range nodeCont.Env {
+				Expect(tc.NotExpected).ToNot(ContainElement(ev.Name))
+			}
+		})
+	}
+}
+
+func findContainer(conts []v1.Container, name string) (v1.Container, bool) {
+	for _, cont := range conts {
+		if cont.Name == name {
+			return cont, true
+		}
+	}
+	return v1.Container{}, false
+}
+
+func convert(src *uns.Unstructured, dst metav1.Object) error {
+	j, err := src.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(j, dst)
+}
+
 func findInObjs(group, kind, name, namespace string, objs []*uns.Unstructured) *uns.Unstructured {
 	for _, obj := range objs {
 		if (obj.GroupVersionKind().GroupKind() == schema.GroupKind{Group: group, Kind: kind} &&
@@ -1630,5 +1744,13 @@ func checkDaemonsetAnnotation(g *WithT, objs []*uns.Unstructured, key, value str
 }
 
 func ptrToUint32(x uint32) *uint32 {
+	return &x
+}
+
+func uintPtr(x uint) *uint {
+	return &x
+}
+
+func boolPtr(x bool) *bool {
 	return &x
 }

@@ -17,6 +17,7 @@ import (
 	configv1 "github.com/openshift/api/config/v1"
 	operv1 "github.com/openshift/api/operator/v1"
 	"github.com/openshift/cluster-network-operator/pkg/bootstrap"
+	"github.com/openshift/cluster-network-operator/pkg/controller/flowsconfig"
 	"github.com/openshift/cluster-network-operator/pkg/names"
 	"github.com/openshift/cluster-network-operator/pkg/render"
 	"github.com/openshift/cluster-network-operator/pkg/util/k8s"
@@ -110,6 +111,9 @@ func renderOVNKubernetes(conf *operv1.NetworkSpec, bootstrapResult *bootstrap.Bo
 	data.Data["NetFlowCollectors"] = ""
 	data.Data["SFlowCollectors"] = ""
 	data.Data["IPFIXCollectors"] = ""
+	data.Data["IPFIXCacheMaxFlows"] = ""
+	data.Data["IPFIXCacheActiveTimeout"] = ""
+	data.Data["IPFIXSampling"] = ""
 	data.Data["OVNPolicyAuditRateLimit"] = c.PolicyAuditConfig.RateLimit
 	data.Data["OVNPolicyAuditMaxFileSize"] = c.PolicyAuditConfig.MaxFileSize
 	data.Data["OVNPolicyAuditDestination"] = c.PolicyAuditConfig.Destination
@@ -180,7 +184,7 @@ func renderOVNKubernetes(conf *operv1.NetworkSpec, bootstrapResult *bootstrap.Bo
 			data.Data["IPFIXCollectors"] = strings.TrimSuffix(collectors.String(), ",")
 		}
 	}
-
+	renderOVNFlowsConfig(bootstrapResult, &data)
 	if len(bootstrapResult.OVN.MasterIPs) == 1 {
 		data.Data["IsSNO"] = true
 	} else {
@@ -239,6 +243,34 @@ func renderOVNKubernetes(conf *operv1.NetworkSpec, bootstrapResult *bootstrap.Bo
 	}
 
 	return objs, nil
+}
+
+// renderOVNFlowsConfig renders the bootstrapped information from the ovs-flows-config ConfigMap
+func renderOVNFlowsConfig(bootstrapResult *bootstrap.BootstrapResult, data *render.RenderData) {
+	flows := bootstrapResult.OVN.FlowsConfig
+	if flows == nil {
+		return
+	}
+	if flows.Target == "" {
+		klog.Warningf("ovs-flows-config configmap 'target' field can't be empty. Ignoring configuration: %+v", flows)
+		return
+	}
+	// if IPFIX collectors are provided by means of both the operator configuration and the
+	// ovs-flows-config ConfigMap, we will merge both targets
+	if colls, ok := data.Data["IPFIXCollectors"].(string); !ok || colls == "" {
+		data.Data["IPFIXCollectors"] = flows.Target
+	} else {
+		data.Data["IPFIXCollectors"] = colls + "," + flows.Target
+	}
+	if flows.CacheMaxFlows != nil {
+		data.Data["IPFIXCacheMaxFlows"] = *flows.CacheMaxFlows
+	}
+	if flows.Sampling != nil {
+		data.Data["IPFIXSampling"] = *flows.Sampling
+	}
+	if flows.CacheActiveTimeout != nil {
+		data.Data["IPFIXCacheActiveTimeout"] = *flows.CacheActiveTimeout
+	}
 }
 
 // bootstrapOVNConfig returns the value of mode found in the openshift-ovn-kubernetes/gateway-mode-config configMap
@@ -568,6 +600,7 @@ func bootstrapOVN(conf *operv1.Network, kubeClient client.Client) (*bootstrap.Bo
 			OVNKubernetesConfig:     ovnConfigResult,
 			PrePullerDaemonset:      prePullerDS,
 			Platform:                platformType,
+			FlowsConfig:             flowsconfig.Bootstrap(kubeClient),
 		},
 	}
 	return &res, nil
